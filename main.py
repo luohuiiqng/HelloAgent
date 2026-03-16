@@ -137,35 +137,46 @@ def main():
         # 2.2 调用LLM生成响应
         llm_output = llm.generate(prompt=full_prompt,system_prompt=AGENT_SYSTEM_PROMPT)
         #模型可能会输出多余的Thought-Action，需要截断
+        #re.seach的正则表达式解释:
+        # (Thought:.*?Action:.*?): 匹配以Thought:开头，后面跟着任意字符（非贪婪模式）直到Action:，并捕获这一部分作为一个组。
+        # (?=\n\s*(?:Thought:|Action:|Observation:)|\Z): 这是一个正向前瞻，确保在匹配的末尾后面跟着一个换行符，后面可能有空白字符，然后是Thought:、Action:或Observation:中的任意一个，或者直接到字符串的末尾(\Z)。
         match = re.search(r'(Thought:.*?Action:.*?)(?=\n\s*(?:Thought:|Action:|Observation:)|\Z)',llm_output,re.DOTALL)
         if not match:
             print("未能解析LLM输出，跳过本轮")
             continue
         else:
+            #strip作用是去除前后的空白字符，确保格式正确
+            #如果LLM输出了多余的Thought-Action对，我们只保留第一对，确保后续解析正确
             truncated = match.group(1).strip()
             if truncated != llm_output.strip():
                 llm_output = truncated
                 print("已截取多余的Thought-Action对")
         print(f"模型输出:\n{llm_output}\n")
+        # 记录LLM输出到历史中，供下一轮使用
         prompt_history.append(llm_output)
         # 2.3 解析并执行行动
+        # 解析Action部分，提取工具调用或结束任务的指令
         action_match = re.search(r"Action:(.*)",llm_output,re.DOTALL)
         if not action_match:
             print("未能解析Action，跳过本轮")
             continue
+        #strip作用是去除前后的空白字符，确保格式正确
         action_str = action_match.group(1).strip()
         # 处理结束任务
+        # Finish[最终答案]格式，提取最终答案并结束循环
         finish_match = re.search(r"Finish\[(.*)\]", action_str, re.IGNORECASE)
         if finish_match:
             final_answer = finish_match.group(1)
             print(f"任务完成，最终答案:{final_answer}")
             break
-
+        # 处理工具调用，提取工具名称和参数
         tool_match = re.match(r"(\w+)\((.*)\)", action_str)
         if not tool_match:
             print("未能解析工具调用，跳过本轮")
             continue
+        # 提取工具名称和参数字符串
         tool_name = tool_match.group(1)
+        # 使用正则表达式提取参数，支持格式为arg_name="arg_value"，并将其转换为字典
         args_str = tool_match.group(2)
         kwargs = dict(re.findall(r'(\w+)="([^"]*)"', args_str))
         if tool_name in available_tools:
@@ -175,6 +186,7 @@ def main():
         # 2.4 记录观察结果
         observation_str = f"Observation:{observation}"
         print(f"{observation_str}\n" + "="*40)
+        # 将观察结果添加到历史中，供下一轮使用
         prompt_history.append(observation_str)
 
 if __name__ == "__main__":
