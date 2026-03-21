@@ -1,193 +1,164 @@
-import requests
-import os
-from tavily import TavilyClient
-from openai import OpenAI
-import re
-from dotenv import load_dotenv
-load_dotenv()
+import torch
+import torch.nn as nn
+import math
 
-
-class OpenAICompatibleClient:
-    """"
-    一个用于调用任何兼容OpenAI接口的LLM服务的客户端
+#--- 占位符模块，将在后续小节中实现 --
+class PositionalEncoding(nn.Module):
     """
-    def __init__(self,model:str,api_key:str,base_url:str):
-        self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
-    def generate(self,prompt:str,system_prompt:str)->str:
-        """
-        调用LLM API来生成响应。
-        """
-        print("正在调用大语言模型...")
-        try:
-            messages = [
-                {'role':'system','content':system_prompt},
-                {'role':'user','content':prompt}
-            ]
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                stream=False
-            )
-            answer = response.choices[0].message.content
-            print("大语言模型响应成功")
-            return answer
-        except Exception as e:
-            print(f"调用LLM API时发生错误:{e}")
-            return "错误:调用语言模型服务时出错"
-
-def get_weather(city: str)-> str:
+    为输入序列的词嵌入向量添加位置编码
     """
-    通过调用wttr.in API查询真实的天气信息
+    def __init__(self,d_model:int,dropout: float = 0.1,max_len:int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p = dropout)
+        #创建一个足够长的位置编码矩阵
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0,d_model,2)*(-math.log(10000.0)/d_model))
+
+        #pe (posotional encoding)的大小为(max_len,d_model)
+        pe = torch.zeros(max_len,d_model)
+        #偶数纬度使用sin,奇书纬度使用cos
+        pe[:,0::2] = torch.sin(position*div_term)
+        pe[:,1::2] = torch.cos(position*div_term)
+        #将pe注册为buffer,这样它就不会被视为模型参数，但会随模型移动)
+        self.register_buffer('pe',pe.unsqueeze(0))
+    def forward(self,x:torch.Tensor)->torch.Tensor:
+        #将x.size(1)是当前输入的序列长度
+        #将位置编码加上输入向量上
+        x = x + self.pe[:,:x.size(1)]
+        return self.dropout(x)
+
+class MultiHeadAttention(nn.Moudule):
     """
-    # API端点，我们请求JSON格式的数据
-    url = f"https://wttr.in/{city}?format=j1"
-    try:
-        #发起网络请求
-        response = requests.get(url)
-        #检查响应状态码是否为200
-        response.raise_for_status()
-        #解析返回的json数据
-        data = response.json()
-
-        #提取当前天气
-        current_condition = data["current_condition"][0]
-        weather_desc = current_condition["weatherDesc"][0]["value"]
-        temp_c = current_condition["temp_C"]
-
-        #格式化成自然语言返回
-        return f"{city}当前天气:{weather_desc}, 温度:{temp_c}°C"
-    except requests.RequestException as e:
-        return f"查询天气时发生错误: {e}"
-    except (KeyError, IndexError) as e:
-        return f"解析天气数据时发生错误: {e}"
-def get_attraction(city:str,weather:str)->str:
+    多头注意力机制模块
     """
-    根据城市和天气，使用Tavily Search API搜索并返回优化后的景点推荐.
+    def forward(sfle,query,key,value,mask):
+        pass
+
+class PositionWiseFeedForward(nn.Moudle):
     """
-    # 1.从环境变量中读取API密钥
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        return "TAVILY_API_KEY未设置，请检查环境变量配置。"
-    # 2.创建Tavily客户端实例
-    client = TavilyClient(api_key=api_key)
-    # 3.构建搜索查询
-    query = f"推荐在{city}天气{weather}时适合游玩的旅游景点"
-    try:
-        # 4.调用Tavily Search API进行搜索
-        search_results = client.search(query=query,search_depth="basic", include_answer=True)
-        # 5.提取并格式化搜索结果
-        if not search_results:
-            return f"未找到适合{city}天气{weather}的旅游景点推荐。"
-        # 如果API返回了综合回答，直接使用它
-        if search_results.get("answer"):
-            return search_results["answer"]
-        #如果没有综合回答则格式化原始结果
-        formated_results = []
-        for result in search_results.get("results",[]):
-            formated_results.append(f"- {result['title']}:{result['content']}")
-        if not formated_results:
-            return f"未找到适合{city}天气{weather}的旅游景点推荐。"
-        return f"根据搜索，为你找到一下信息:\n" + "\n".join(formated_results)
-    except Exception as e:
-        return f"查询旅游景点时发生错误: {e}"
+    位置前馈网络模块
+    """
+    def __init__(self,d_model,d_ff,dropout=0.1):
+        super(PositionWiseFeedForward,self).__init__()
+        self.linear1 = nn.Linear(d_model,d_ff)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ff,d_model)
+        self.relu = nn.ReLu()
 
-def main():
-    available_tools = {
-        "get_weather": get_weather,
-        "get_attraction": get_attraction
-    }
+    def forward(self,x,mask):
+        # #1. 多头自注意力
+        # attn_output = self.self_attn(x,x,x,mask)
+        # x = self.norm1(x+self.dropout(attn_output))
 
-    AGENT_SYSTEM_PROMPT = """
-    你是一个智能旅行助手。你的任务是分析用户的请求，并使用可用工具一步步地解决问题。
-    # 可用工具:
-    - 'get_weather(city:str):查询指定城市的实时天气。
-    - 'get_attraction(city:str,weather:str)':根据城市和天气搜索推荐的旅游景点。
+        # #2.前馈网络
+        # ff_output = self.feed_forward(x)
+        # x = self.norm2(x+self.dropout(ff_output))
+        # return x
+        x = self.linear1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.linear2(x)
+        return x
+   
+#------解码器核心层------
+class DecoderLayer(nn.Module):
+    def __init__(self,d_model,num_heads,d_ff,dropout):
+        super(DecoderLayer,self).__init__()
+        self.self_attn = MultiHeadAttention()#待实现
+        self.feed_forward = PositionWiseFeedForward()#待实现
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+    def forward(self,x,mask):
+        #残差连接与层归一化将在3.1.2.4节中详解
+        #1. 多头注意力机制
+        attn_output = self.self_attn(x,x,x,mask)
+        x = self.norm1(x+self.droput(attn_output))
 
-    # 输出格式要求：
-    你的每次回复必须严格遵循一下格式，包含一对Thought和Action:
+        #2.前馈网络
+        ff_output = self.feed_forward(x)
+        x = self.norm2(x+self.dropout(ff_output))
+        return x
+    
+#解码器核心层
+class Decoder(nn.Module):
+    def __init__(self,d_model,num_heads,d_ff,dropout):
+        super(DecoderLayer,self).__init__()
+        self.self_attn = MultiHeadAttention()#待实现
+        self.cross_attn = MultiHeadAttention()#待实现
+        self.feed_forward = PositionWiseFeedForward()#待实现
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+    def forward(self,x,enc_output,src_mask,tgt_mask):
+        #1. 自注意力机制
+        attn_output = self.self_attn(x,x,x,tgt_mask)
+        x = self.norm1(x+self.dropout(attn_output))
 
-    Thought:[你的思考过程和下一步计划。]
-    Action:[你要执行的具体行动]
+        #2.交叉注意力机制
+        cross_attn_output = self.cross_attn(x,enc_output,enc_output,src_mask)
+        x = self.norm2(x+self.dropout(cross_attn_output))
 
-    Action的格式必须是一下之一:
-    1.调用工具:function_name(arg_name="arg_value")
-    2.结束任务:Finish[最终答案]
+        #3.前馈网络
+        ff_output = self.feed_forward(x)
+        x = self.norm3(x+self.dropout(ff_output))
+        return x
+    
+class MultiHeadAttention(nn.Module):
+    """
+    多头注意力机制模块
+    """
+    def __init__(self, d_model, num_heads):
+        super(MultiHeadAttention,self).__init__()
+        assert d_model % num_heads == 0,"d_model必须能被num_heads整除"
 
-    # 重要提示:
-    - 每次只输出一对Thought-Action
-    - Action必须在同一行，不要换行
-    - 当收集到足够信息可以回答用户时，必须使用Action:Finsh[最终答案] 格式来结束
-    请开始吧！
-"""
-    llm = OpenAICompatibleClient(
-        model="stepfun/step-3.5-flash:free",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        base_url=os.getenv("OPENROUTER_BASE_URL")
-    )
-    # ---1.初始化---
-    user_prompt = "你好，请帮我查查询一下今天北京的天气，然后根据天气推荐一个合适的旅游景点."
-    prompt_history = [f"用户请求:{user_prompt}"]
-    print(f"用户输入:{user_prompt}\n"+"-"*50)
-    # ---2.运行主循环---
-    for i in range(5):
-        print(f"---第{i+1}轮交互---")
-        # 2.1 构建Prompt
-        full_prompt="\n".join(prompt_history)
-        # 2.2 调用LLM生成响应
-        llm_output = llm.generate(prompt=full_prompt,system_prompt=AGENT_SYSTEM_PROMPT)
-        #模型可能会输出多余的Thought-Action，需要截断
-        #re.seach的正则表达式解释:
-        # (Thought:.*?Action:.*?): 匹配以Thought:开头，后面跟着任意字符（非贪婪模式）直到Action:，并捕获这一部分作为一个组。
-        # (?=\n\s*(?:Thought:|Action:|Observation:)|\Z): 这是一个正向前瞻，确保在匹配的末尾后面跟着一个换行符，后面可能有空白字符，然后是Thought:、Action:或Observation:中的任意一个，或者直接到字符串的末尾(\Z)。
-        match = re.search(r'(Thought:.*?Action:.*?)(?=\n\s*(?:Thought:|Action:|Observation:)|\Z)',llm_output,re.DOTALL)
-        if not match:
-            print("未能解析LLM输出，跳过本轮")
-            continue
-        else:
-            #strip作用是去除前后的空白字符，确保格式正确
-            #如果LLM输出了多余的Thought-Action对，我们只保留第一对，确保后续解析正确
-            truncated = match.group(1).strip()
-            if truncated != llm_output.strip():
-                llm_output = truncated
-                print("已截取多余的Thought-Action对")
-        print(f"模型输出:\n{llm_output}\n")
-        # 记录LLM输出到历史中，供下一轮使用
-        prompt_history.append(llm_output)
-        # 2.3 解析并执行行动
-        # 解析Action部分，提取工具调用或结束任务的指令
-        action_match = re.search(r"Action:(.*)",llm_output,re.DOTALL)
-        if not action_match:
-            print("未能解析Action，跳过本轮")
-            continue
-        #strip作用是去除前后的空白字符，确保格式正确
-        action_str = action_match.group(1).strip()
-        # 处理结束任务
-        # Finish[最终答案]格式，提取最终答案并结束循环
-        finish_match = re.search(r"Finish\[(.*)\]", action_str, re.IGNORECASE)
-        if finish_match:
-            final_answer = finish_match.group(1)
-            print(f"任务完成，最终答案:{final_answer}")
-            break
-        # 处理工具调用，提取工具名称和参数
-        tool_match = re.match(r"(\w+)\((.*)\)", action_str)
-        if not tool_match:
-            print("未能解析工具调用，跳过本轮")
-            continue
-        # 提取工具名称和参数字符串
-        tool_name = tool_match.group(1)
-        # 使用正则表达式提取参数，支持格式为arg_name="arg_value"，并将其转换为字典
-        args_str = tool_match.group(2)
-        kwargs = dict(re.findall(r'(\w+)="([^"]*)"', args_str))
-        if tool_name in available_tools:
-            observation = available_tools[tool_name](**kwargs)
-        else:
-            observation = f"错误:未知工具'{tool_name}'"
-        # 2.4 记录观察结果
-        observation_str = f"Observation:{observation}"
-        print(f"{observation_str}\n" + "="*40)
-        # 将观察结果添加到历史中，供下一轮使用
-        prompt_history.append(observation_str)
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
 
-if __name__ == "__main__":
-    main()
+        #定义Q,K,V和输出的线性变换层
+        self.w_q = nn.Linear(d_model,d_model)
+        self.w_k = nn.Linear(d_model,d_model)
+        self.w_v = nn.Linear(d_model,d_model)
+        self.w_o = nn.Linear(d_model,d_model)
+    def scaled_dot_product_attention(self,Q,K,V,mask=None):
+        #1. 计算注意力得分
+        attn_scores = torch.matmul(Q,K.transpose(-2,-1)) / math.sqrt(self.d_k)
+
+        #2.应用编码
+        if mask is not None:
+            #将掩码中为0的位置设置为一个非常小的负数，这样softmax后会非常接近0
+            attn_scores = attn_scores.masked_fill(mask==0,float('-inf'))
+
+        #3.计算注意力权重
+        attn_probs = torch.softmax(attn_scores,dim = -1)
+
+        #4.加权求和
+        output = torch.matmul(attn_probs,V)
+        return output
+    def split_heads(self,x):
+        #将输入x的形状从(batch_size,seq_length,d_model)
+        #转换为(batch_size,num_heads,seq_length,d_k)
+        batch_size,seq_length,d_model = x.size()
+        x = x.view(batch_size,seq_length,self.num_heads,self.d_k).transpose(1,2)
+        return x
+    def combine_heads(self,x):
+        #将输入x的形状从(batch_size,num_heads,seq_length,d_k)
+        #转换为(batch_size,seq_length,d_model)
+        batch_size,num_heads,seq_length,d_k = x.size()
+        x = x.transpose(1,2).contiguous().view(batch_size,seq_length,self.d_model)
+        return x
+    def forward(self,query,key,value,mask=None):
+        #1.线性变换并分头
+        Q = self.split_heads(self.w_q(query))
+        K = self.split_heads(self.w_k(key))
+        V = self.split_heads(self.w_v(value))
+
+        #2.计算缩放点积注意力
+        attn_output = self.scaled_dot_product_attention(Q,K,V,mask)
+
+        #3.合并头部并线性变换输出
+        attn_output = self.combine_heads(attn_output)
+        output = self.w_o(attn_output)
+        return output
